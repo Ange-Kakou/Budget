@@ -22,6 +22,12 @@ npm run dev
 
 Puis ouvre le lien affiché dans le terminal (généralement http://localhost:5173).
 
-## Note sur les données
+## Base de données (Supabase)
 
-Les données sont sauvegardées dans le navigateur (localStorage) : elles restent présentes tant que tu utilises le même navigateur sur le même appareil. Pour retrouver tes données sur plusieurs appareils, il faudra une vraie base de données en ligne (ex: Supabase) — étape possible dans un second temps.
+L'application est maintenant connectée à une base de données en ligne (Supabase). Tes données sont liées à ton compte (email + mot de passe) et accessibles depuis n'importe quel appareil.
+
+Les clés de connexion sont déjà dans `src/supabaseClient.js` — c'est normal et sans risque, la clé "anon public" est faite pour être visible dans le code d'une application.
+
+Si ce n'est pas déjà fait, exécute le script SQL fourni dans l'éditeur SQL de ton projet Supabase (onglet "SQL Editor") pour créer les tables `budget_items` et `transactions` avant la première utilisation.
+
+Après avoir redéployé sur Vercel (Deployments > Redeploy), crée ton compte directement depuis l'application avec le bouton "Créer un compte".
