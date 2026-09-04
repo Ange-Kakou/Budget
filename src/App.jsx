@@ -139,6 +139,14 @@ function formatDateFR(dateStr) {
   return `${d}-${m}-${y}`;
 }
 
+function sortTransactions(list) {
+  return [...list].sort((a, b) => {
+    const dateCmp = (b.date || "").localeCompare(a.date || "");
+    if (dateCmp !== 0) return dateCmp;
+    return (b.created_at || "").localeCompare(a.created_at || "");
+  });
+}
+
 const fmt = (n) =>
   new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(n || 0) + " F";
 
@@ -232,7 +240,7 @@ export default function BudgetApp() {
     if (!session) return;
     (async () => {
       const { data: rows, error: e1 } = await supabase.from("budget_items").select("*").order("position", { ascending: true });
-      const { data: txRows, error: e2 } = await supabase.from("transactions").select("*").order("date", { ascending: false });
+      const { data: txRows, error: e2 } = await supabase.from("transactions").select("*").order("date", { ascending: false }).order("created_at", { ascending: false });
 
       if (!e1 && rows && rows.length > 0) {
         const rebuilt = {};
@@ -261,9 +269,9 @@ export default function BudgetApp() {
       }
 
       if (!e2 && txRows) {
-        setTransactions(txRows.map((t) => ({
-          id: t.id, date: t.date, type: t.type, category: t.category, amount: t.amount, comment: t.comment,
-        })));
+        setTransactions(sortTransactions(txRows.map((t) => ({
+          id: t.id, date: t.date, type: t.type, category: t.category, amount: t.amount, comment: t.comment, created_at: t.created_at,
+        }))));
       }
       setLoaded(true);
     })();
@@ -345,6 +353,16 @@ export default function BudgetApp() {
     setData((prev) => ({ ...prev, [group]: prev[group].map((r, i) => (i === idx ? { ...r, name } : r)) }));
   };
 
+  const commitRename = async (group, oldName, newName) => {
+    if (!oldName || oldName === newName || !newName) return;
+    setTransactions((prev) => prev.map((t) => (t.type === group && t.category === oldName) ? { ...t, category: newName } : t));
+    await supabase.from("transactions")
+      .update({ category: newName })
+      .eq("user_id", session.user.id)
+      .eq("type", group)
+      .eq("category", oldName);
+  };
+
   const moveRow = (group, idx, direction) => {
     setData((prev) => {
       const rows = [...prev[group]];
@@ -372,10 +390,10 @@ export default function BudgetApp() {
     };
     const { data: inserted, error } = await supabase.from("transactions").insert(payload).select().single();
     if (!error && inserted) {
-      setTransactions((prev) => [
-        { id: inserted.id, date: inserted.date, type: inserted.type, category: inserted.category, amount: inserted.amount, comment: inserted.comment },
+      setTransactions((prev) => sortTransactions([
+        { id: inserted.id, date: inserted.date, type: inserted.type, category: inserted.category, amount: inserted.amount, comment: inserted.comment, created_at: inserted.created_at },
         ...prev,
-      ]);
+      ]));
       setTxForm({ date: todayStr(), type: "", category: "", amount: "", comment: "" });
     }
   };
@@ -398,10 +416,10 @@ export default function BudgetApp() {
     }));
     const { data: inserted, error } = await supabase.from("transactions").insert(payload).select();
     if (!error && inserted) {
-      setTransactions((prev) => [
-        ...inserted.map((t) => ({ id: t.id, date: t.date, type: t.type, category: t.category, amount: t.amount, comment: t.comment })),
+      setTransactions((prev) => sortTransactions([
+        ...inserted.map((t) => ({ id: t.id, date: t.date, type: t.type, category: t.category, amount: t.amount, comment: t.comment, created_at: t.created_at })),
         ...prev,
-      ]);
+      ]));
     }
   };
 
@@ -500,7 +518,7 @@ export default function BudgetApp() {
             />
           )}
           {tab === "budget" && (
-            <BudgetTab data={data} updateCell={updateCell} addRow={addRow} removeRow={removeRow} renameRow={renameRow} moveRow={moveRow} />
+            <BudgetTab data={data} updateCell={updateCell} addRow={addRow} removeRow={removeRow} renameRow={renameRow} moveRow={moveRow} commitRename={commitRename} />
           )}
           {tab === "suivi" && (
             <SuiviReelTab data={data} transactions={transactions} monthIdx={monthIdx} onDistribute={applyDistribution} />
@@ -1027,6 +1045,11 @@ function ObjectifAnneeCard({ data, transactions, monthIdx }) {
 
   const showMini = objectifRows.length >= 2;
   const miniLabels = objectifRows.length > 3 ? selected : objectifRows.map((r) => r.name);
+  const currentPct = current && current.cumulObjectif > 0 ? (current.cumulSaved / current.cumulObjectif) * 100 : 0;
+  const donutData = [
+    { name: "Atteint", value: Math.min(current?.cumulSaved || 0, current?.cumulObjectif || 0) },
+    { name: "Restant", value: Math.max((current?.cumulObjectif || 0) - (current?.cumulSaved || 0), 0) || 0.0001 },
+  ];
 
   return (
     <Card title="Objectif de l'année">
@@ -1040,15 +1063,26 @@ function ObjectifAnneeCard({ data, transactions, monthIdx }) {
               <div className="text-xs" style={{ color: colors.textDim }}>{status.message(Math.abs(diff))}</div>
             </div>
           )}
-          <ResponsiveContainer width="100%" height={180}>
-            <LineChart data={evolution}>
-              <CartesianGrid stroke={colors.line} vertical={false} />
-              <XAxis dataKey="mois" stroke={colors.textDim} fontSize={11} tickLine={false} axisLine={false} />
-              <YAxis stroke={colors.textDim} fontSize={10} tickLine={false} axisLine={false} width={38} tickFormatter={(v) => `${v}%`} />
-              <Tooltip formatter={(v) => `${v}%`} contentStyle={{ background: colors.surface2, border: `1px solid ${colors.line}`, borderRadius: 8, fontSize: 12, color: colors.text }} />
-              <Line type="monotone" dataKey="Progression" stroke={colors.gold} strokeWidth={2.5} dot={{ r: 3, fill: colors.gold }} />
-            </LineChart>
-          </ResponsiveContainer>
+          <div className="flex items-center gap-4">
+            <div className="relative shrink-0" style={{ width: 130, height: 130 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={donutData} dataKey="value" innerRadius={46} outerRadius={63} startAngle={90} endAngle={-270} stroke="none">
+                    <Cell fill={currentPct >= 100 ? colors.mint : colors.gold} />
+                    <Cell fill={colors.surface3} />
+                  </Pie>
+                  <Tooltip formatter={(v) => fmt(v)} contentStyle={{ background: colors.surface2, border: `1px solid ${colors.line}`, borderRadius: 8, fontSize: 12, color: colors.text }} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="absolute inset-0 flex items-center justify-center">
+                <span className="num text-lg font-semibold" style={{ color: colors.text }}>{Math.round(currentPct)}%</span>
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5 text-xs" style={{ color: colors.textDim }}>
+              <div>Objectif cumulé : <span className="num font-medium" style={{ color: colors.text }}>{fmt(current?.cumulObjectif || 0)}</span></div>
+              <div>Épargné cumulé : <span className="num font-medium" style={{ color: colors.text }}>{fmt(current?.cumulSaved || 0)}</span></div>
+            </div>
+          </div>
 
           {showMini && (
             <div className="mt-4 pt-3" style={{ borderTop: `1px solid ${colors.line}` }}>
@@ -1072,16 +1106,29 @@ function ObjectifAnneeCard({ data, transactions, monthIdx }) {
               )}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 {objectifRows.filter((r) => miniLabels.includes(r.name)).slice(0, 3).map((row) => {
-                  let c = 0;
-                  const rowEvo = MONTHS.map((m, i) => { c += reelForLabel(transactions, "Objectifs", row.name, i); return { mois: m, val: c }; });
+                  const targetTotal = sumRow(row);
+                  const savedTotal = reelForLabel(transactions, "Objectifs", row.name, -1);
+                  const pct = targetTotal > 0 ? (savedTotal / targetTotal) * 100 : 0;
+                  const miniDonut = [
+                    { name: "Atteint", value: Math.min(savedTotal, targetTotal) },
+                    { name: "Restant", value: Math.max(targetTotal - savedTotal, 0) || 0.0001 },
+                  ];
                   return (
-                    <div key={row.name}>
-                      <div className="text-[11px] mb-1 truncate" style={{ color: colors.textDim }}>{row.name}</div>
-                      <ResponsiveContainer width="100%" height={70}>
-                        <LineChart data={rowEvo}>
-                          <Line type="monotone" dataKey="val" stroke={colors.mint} strokeWidth={2} dot={false} />
-                        </LineChart>
-                      </ResponsiveContainer>
+                    <div key={row.name} className="flex flex-col items-center">
+                      <div className="text-[11px] mb-1 truncate w-full text-center" style={{ color: colors.textDim }}>{row.name}</div>
+                      <div className="relative" style={{ width: 72, height: 72 }}>
+                        <ResponsiveContainer width="100%" height="100%">
+                          <PieChart>
+                            <Pie data={miniDonut} dataKey="value" innerRadius={22} outerRadius={32} startAngle={90} endAngle={-270} stroke="none">
+                              <Cell fill={pct >= 100 ? colors.mint : colors.gold} />
+                              <Cell fill={colors.surface3} />
+                            </Pie>
+                          </PieChart>
+                        </ResponsiveContainer>
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <span className="num text-[11px] font-semibold" style={{ color: colors.text }}>{Math.round(pct)}%</span>
+                        </div>
+                      </div>
                     </div>
                   );
                 })}
@@ -1270,8 +1317,9 @@ function MonthCell({ value, onChange }) {
   );
 }
 
-function BudgetTab({ data, updateCell, addRow, removeRow, renameRow, moveRow }) {
+function BudgetTab({ data, updateCell, addRow, removeRow, renameRow, moveRow, commitRename }) {
   const { colors } = useContext(ThemeContext);
+  const originalNames = useRef({});
   return (
     <div className="flex flex-col gap-5">
       {Object.entries(data).map(([group, rows]) => (
@@ -1305,7 +1353,13 @@ function BudgetTab({ data, updateCell, addRow, removeRow, renameRow, moveRow }) 
                     <td className="py-1 pr-3 sticky left-0" style={{ background: colors.surface }}>
                       <input
                         value={row.name}
+                        onFocus={() => { originalNames.current[row.id || `${group}-${ri}`] = row.name; }}
                         onChange={(e) => renameRow(group, ri, e.target.value)}
+                        onBlur={() => {
+                          const key = row.id || `${group}-${ri}`;
+                          const original = originalNames.current[key];
+                          if (original && original !== row.name) commitRename(group, original, row.name);
+                        }}
                         className="w-full bg-transparent text-sm font-medium"
                         style={{ color: colors.text, border: "none", outline: "none" }}
                       />

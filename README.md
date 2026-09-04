@@ -32,7 +32,39 @@ Si ce n'est pas déjà fait, exécute le script SQL fourni dans l'éditeur SQL d
 
 Après avoir redéployé sur Vercel (Deployments > Redeploy), crée ton compte directement depuis l'application avec le bouton "Créer un compte".
 
-## Mise à jour : compte, sécurité, suivi réel enrichi
+## Mise à jour : graphiques circulaires, tri des transactions, renommage propagé
+
+- **Objectif de l'année** et ses mini-graphiques par intitulé sont maintenant des **cercles/donuts** (% atteint) au lieu de courbes.
+- **Transactions** : l'historique est trié de la plus récente à la plus ancienne ; pour une même date, l'heure de saisie départage l'ordre.
+- **Budget** : renommer un libellé existant (clic dans le champ, modifier, puis cliquer ailleurs) met automatiquement à jour toutes les transactions déjà enregistrées sous l'ancien nom — et donc l'onglet Suivi réel s'aligne aussi, sans action supplémentaire.
+
+
+
+La fenêtre de répartition du surplus affiche maintenant un champ **Date de la répartition**, pré-rempli avec la date du jour, modifiable avant de confirmer. Les transactions créées utilisent cette date.
+
+
+
+Le vrai souci : quand aucun montant estimé n'était encore défini pour tes intitulés Épargne/Objectifs (ce qui est le cas par défaut), l'écran "Répartir automatiquement" affichait une liste vide et ne menait nulle part clairement. Corrections :
+- Si aucun montant estimé n'est défini, l'application passe désormais directement à l'étape "choisis où affecter le surplus" (répartition égale entre les intitulés cochés), au lieu d'un écran vide trompeur.
+- Chaque transaction créée porte maintenant un **commentaire distinct** précisant l'intitulé concerné et la raison (ex: "Répartition du surplus — Vacances (montant choisi manuellement)").
+- Une confirmation visuelle apparaît une fois les transactions bien créées, avant fermeture de la fenêtre.
+
+
+
+### Correctif important : libellés en double
+La cause a été trouvée : chaque modification déclenchait un "tout supprimer, tout réinsérer" en base — si deux synchronisations se chevauchaient, ça dupliquait les lignes. Le système utilise maintenant un identifiant stable par ligne (upsert), qui élimine ce risque à la racine. **Au prochain chargement de l'application, les doublons déjà présents dans ta base seront automatiquement détectés et supprimés** — aucune manipulation de ta part n'est nécessaire.
+
+### Transactions
+- Filtres par Date, Type, Catégorie, Commentaire et Montant, au-dessus de l'historique
+- Les dates s'affichent désormais au format `23-08-2026`
+
+### Suivi réel
+La ligne "Total" de chaque catégorie a maintenant un encadré doré distinct, avec un texte plus grand — elle se démarque clairement des lignes de libellés individuels.
+
+
+
+### Graphiques du tableau de bord basés sur le réel
+Tous les graphiques du Tableau de bord (répartition des dépenses, revenus vs dépenses sur 12 mois, évolution du solde cumulé, progression annuelle des objectifs et ses mini-graphiques par intitulé) utilisent maintenant les montants **réels** issus des Transactions, et non plus les estimations du Budget. Seul le cercle "Objectif du mois" garde volontairement l'estimé comme cible à atteindre (c'est la référence, pas une mesure).
 
 ### Nouveautés
 - **Page d'accueil** : Revenus, Dépenses, Épargne affichent maintenant les montants **réels** (calculés depuis Transactions), plus un 4e indicateur **Objectif**.
