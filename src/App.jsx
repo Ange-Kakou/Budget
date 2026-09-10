@@ -374,12 +374,9 @@ export default function BudgetApp() {
   };
 
   const [popupMsg, setPopupMsg] = useState("");
+  const [pendingConfirm, setPendingConfirm] = useState(false);
 
-  const submitTx = async (e) => {
-    e.preventDefault();
-    if (!txForm.type) { setPopupMsg("Veuillez choisir un type."); return; }
-    if (!txForm.category) { setPopupMsg("Veuillez choisir une catégorie."); return; }
-    if (!txForm.amount || Number(txForm.amount) <= 0) { setPopupMsg("Veuillez indiquer un montant."); return; }
+  const doInsert = async () => {
     const payload = {
       user_id: session.user.id,
       date: txForm.date || todayStr(),
@@ -397,6 +394,21 @@ export default function BudgetApp() {
       setTxForm({ date: todayStr(), type: "", category: "", amount: "", comment: "" });
     }
   };
+
+  const submitTx = async (e) => {
+    e.preventDefault();
+    if (!txForm.type) { setPopupMsg("Veuillez choisir un type."); return; }
+    if (!txForm.category) { setPopupMsg("Veuillez choisir une catégorie."); return; }
+    if (!txForm.amount || Number(txForm.amount) === 0) { setPopupMsg("Veuillez indiquer un montant."); return; }
+    const isBalanceType = SPLIT_GROUPS.includes(txForm.type);
+    const amt = Number(txForm.amount);
+    if (!isBalanceType && amt < 0) { setPopupMsg("Le montant doit être positif pour ce type de transaction."); return; }
+    if (isBalanceType && amt < 0) { setPendingConfirm(true); return; }
+    await doInsert();
+  };
+
+  const confirmNegative = async () => { setPendingConfirm(false); await doInsert(); };
+  const cancelNegative = () => setPendingConfirm(false);
 
   const deleteTx = async (id) => {
     setTransactions((prev) => prev.filter((x) => x.id !== id));
@@ -515,6 +527,7 @@ export default function BudgetApp() {
               transactions={transactions} onDeleteTx={deleteTx}
               categories={allCategoryNames} groups={TX_GROUPS}
               popupMsg={popupMsg} onClosePopup={() => setPopupMsg("")}
+              pendingConfirm={pendingConfirm} onConfirmNegative={confirmNegative} onCancelNegative={cancelNegative}
             />
           )}
           {tab === "budget" && (
@@ -950,10 +963,10 @@ function ObjectifMoisCard({ data, monthIdx, totals }) {
   }
 
   const pct = (epargneMois / objectifMois) * 100;
-  const atteint = Math.min(epargneMois, objectifMois);
-  const restantPart = Math.max(objectifMois - epargneMois, 0);
+  const atteint = Math.max(Math.min(epargneMois, objectifMois), 0);
+  const restantPart = Math.max(objectifMois - Math.max(epargneMois, 0), 0);
   const pieSlices = [
-    { name: "Atteint", value: atteint },
+    { name: "Atteint", value: atteint || 0.0001 },
     { name: "Restant", value: restantPart || 0.0001 },
   ];
   const manqueEpargne = Math.max(objectifMois - epargneMois, 0);
@@ -1047,8 +1060,8 @@ function ObjectifAnneeCard({ data, transactions, monthIdx }) {
   const miniLabels = objectifRows.length > 3 ? selected : objectifRows.map((r) => r.name);
   const currentPct = current && current.cumulObjectif > 0 ? (current.cumulSaved / current.cumulObjectif) * 100 : 0;
   const donutData = [
-    { name: "Atteint", value: Math.min(current?.cumulSaved || 0, current?.cumulObjectif || 0) },
-    { name: "Restant", value: Math.max((current?.cumulObjectif || 0) - (current?.cumulSaved || 0), 0) || 0.0001 },
+    { name: "Atteint", value: Math.max(Math.min(current?.cumulSaved || 0, current?.cumulObjectif || 0), 0) || 0.0001 },
+    { name: "Restant", value: Math.max((current?.cumulObjectif || 0) - Math.max(current?.cumulSaved || 0, 0), 0) || 0.0001 },
   ];
 
   return (
@@ -1110,8 +1123,8 @@ function ObjectifAnneeCard({ data, transactions, monthIdx }) {
                   const savedTotal = reelForLabel(transactions, "Objectifs", row.name, -1);
                   const pct = targetTotal > 0 ? (savedTotal / targetTotal) * 100 : 0;
                   const miniDonut = [
-                    { name: "Atteint", value: Math.min(savedTotal, targetTotal) },
-                    { name: "Restant", value: Math.max(targetTotal - savedTotal, 0) || 0.0001 },
+                    { name: "Atteint", value: Math.max(Math.min(savedTotal, targetTotal), 0) || 0.0001 },
+                    { name: "Restant", value: Math.max(targetTotal - Math.max(savedTotal, 0), 0) || 0.0001 },
                   ];
                   return (
                     <div key={row.name} className="flex flex-col items-center">
@@ -1164,11 +1177,12 @@ function InfoModal({ message, onClose, tone = "warning" }) {
   );
 }
 
-function TransactionsTab({ txForm, setTxForm, submitTx, transactions, onDeleteTx, categories, groups, popupMsg, onClosePopup }) {
+function TransactionsTab({ txForm, setTxForm, submitTx, transactions, onDeleteTx, categories, groups, popupMsg, onClosePopup, pendingConfirm, onConfirmNegative, onCancelNegative }) {
   const { colors } = useContext(ThemeContext);
   const inputStyle = { background: colors.surface2, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "7px 10px", color: colors.text, fontSize: 13.5, outline: "none" };
   const [filters, setFilters] = useState({ date: "", type: "", category: "", comment: "", amount: "" });
   const hasFilters = Object.values(filters).some((v) => v);
+  const isBalanceType = SPLIT_GROUPS.includes(txForm.type);
 
   const filtered = useMemo(() => {
     return transactions.filter((t) => {
@@ -1198,7 +1212,14 @@ function TransactionsTab({ txForm, setTxForm, submitTx, transactions, onDeleteTx
               {categories.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </Field>
-          <Field label="Montant (F CFA)"><input type="number" value={txForm.amount} onChange={(e) => setTxForm({ ...txForm, amount: e.target.value })} placeholder="0" className="w-full num" style={inputStyle} /></Field>
+          <Field label="Montant (F CFA)">
+            <input type="number" value={txForm.amount} onChange={(e) => setTxForm({ ...txForm, amount: e.target.value })} placeholder="0" className="w-full num" style={inputStyle} />
+            {isBalanceType && (
+              <span className="text-[11px] mt-0.5" style={{ color: colors.textDim }}>
+                Astuce : indique un montant négatif pour enregistrer un retrait.
+              </span>
+            )}
+          </Field>
           <Field label="Commentaire"><input type="text" value={txForm.comment} onChange={(e) => setTxForm({ ...txForm, comment: e.target.value })} placeholder="Optionnel" className="w-full" style={inputStyle} /></Field>
           <button type="submit" className="mt-1.5 flex items-center justify-center gap-1.5 py-2.5 rounded-md text-sm font-semibold" style={{ background: colors.gold, color: colors.ink }}>
             <Plus size={15} /> Ajouter
@@ -1239,24 +1260,51 @@ function TransactionsTab({ txForm, setTxForm, submitTx, transactions, onDeleteTx
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((t) => (
-                  <tr key={t.id} style={{ borderTop: `1px solid ${colors.line}` }}>
-                    <td className="py-2 pr-3 num" style={{ color: colors.textDim }}>{formatDateFR(t.date)}</td>
-                    <td className="py-2 pr-3">{t.type}</td>
-                    <td className="py-2 pr-3">{t.category}</td>
-                    <td className="py-2 pr-3" style={{ color: colors.textDim }}>{t.comment || "—"}</td>
-                    <td className="py-2 pr-3 num text-right font-medium">{fmt(t.amount)}</td>
-                    <td className="py-2 text-right">
-                      <button onClick={() => onDeleteTx(t.id)} style={{ color: colors.textDim }}><Trash2 size={14} /></button>
-                    </td>
-                  </tr>
-                ))}
+                {filtered.map((t) => {
+                  const isWithdrawal = Number(t.amount) < 0;
+                  const isDeposit = SPLIT_GROUPS.includes(t.type) && Number(t.amount) > 0;
+                  return (
+                    <tr key={t.id} style={{ borderTop: `1px solid ${colors.line}`, background: isWithdrawal ? (colors.coral + "0d") : "transparent" }}>
+                      <td className="py-2 pr-3 num" style={{ color: colors.textDim }}>{formatDateFR(t.date)}</td>
+                      <td className="py-2 pr-3">{t.type}</td>
+                      <td className="py-2 pr-3">{t.category}</td>
+                      <td className="py-2 pr-3" style={{ color: colors.textDim }}>{t.comment || "—"}</td>
+                      <td className="py-2 pr-3 num text-right font-medium" style={{ color: isWithdrawal ? colors.coral : colors.text }}>
+                        {isWithdrawal ? "↓ Retrait — " : isDeposit ? "↑ " : ""}{fmt(Math.abs(t.amount))}
+                      </td>
+                      <td className="py-2 text-right">
+                        <button onClick={() => onDeleteTx(t.id)} style={{ color: colors.textDim }}><Trash2 size={14} /></button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </Card>
       <InfoModal message={popupMsg} onClose={onClosePopup} />
+      {pendingConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-5" style={{ background: "rgba(0,0,0,0.5)" }}>
+          <div className="w-full max-w-xs rounded-xl p-5 text-center" style={{ background: colors.surface, border: `1px solid ${colors.line}` }}>
+            <div className="flex justify-center mb-3">
+              <AlertTriangle size={28} color={colors.coral} />
+            </div>
+            <div className="text-sm mb-1 font-medium" style={{ color: colors.text }}>Confirmer ce retrait ?</div>
+            <div className="text-xs mb-4" style={{ color: colors.textDim }}>
+              Tu es sur le point d'enregistrer un retrait de <span className="num font-semibold" style={{ color: colors.coral }}>{fmt(Math.abs(Number(txForm.amount)))}</span> sur « {txForm.category} » ({txForm.type}), à la date du {formatDateFR(txForm.date)}.
+            </div>
+            <div className="flex gap-2">
+              <button onClick={onCancelNegative} className="flex-1 py-2 rounded-md text-sm font-medium" style={{ background: colors.surface2, color: colors.text }}>
+                Annuler
+              </button>
+              <button onClick={onConfirmNegative} className="flex-1 py-2 rounded-md text-sm font-semibold" style={{ background: colors.coral, color: "#fff" }}>
+                Confirmer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

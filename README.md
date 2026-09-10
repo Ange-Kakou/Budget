@@ -32,7 +32,11 @@ Si ce n'est pas déjà fait, exécute le script SQL fourni dans l'éditeur SQL d
 
 Après avoir redéployé sur Vercel (Deployments > Redeploy), crée ton compte directement depuis l'application avec le bouton "Créer un compte".
 
-## Mise à jour : graphiques circulaires, tri des transactions, renommage propagé
+## Mise à jour : montants négatifs pour Épargne/Objectifs (retraits)
+
+Dans Transactions, un montant **négatif** est maintenant accepté pour les types Épargne et Objectifs (pour représenter un retrait sur un compte mobile money par exemple). Une fenêtre de confirmation apparaît avant l'enregistrement. Dans l'historique, ces retraits s'affichent en rouge avec la mention "↓ Retrait", et les dépôts (montants positifs) sur ces mêmes catégories sont marqués "↑". Pour tous les autres types (Dépenses, Factures, etc.), le montant doit rester positif.
+
+
 
 - **Objectif de l'année** et ses mini-graphiques par intitulé sont maintenant des **cercles/donuts** (% atteint) au lieu de courbes.
 - **Transactions** : l'historique est trié de la plus récente à la plus ancienne ; pour une même date, l'heure de saisie départage l'ordre.
