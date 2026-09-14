@@ -32,7 +32,56 @@ Si ce n'est pas déjà fait, exécute le script SQL fourni dans l'éditeur SQL d
 
 Après avoir redéployé sur Vercel (Deployments > Redeploy), crée ton compte directement depuis l'application avec le bouton "Créer un compte".
 
-## Mise à jour : montants négatifs pour Épargne/Objectifs (retraits)
+## Mise à jour : nouvel onglet Comptes (mobile money, banque, liquide)
+
+### Ce qui a été ajouté
+Un onglet **Comptes** permet de suivre le solde de plusieurs comptes (mobile money, bancaire, liquide, autre) :
+- Crée autant de comptes que tu veux, avec un nom et un type
+- Enregistre des **dépôts**, **retraits**, ou des **transferts** entre tes propres comptes (les transferts ne comptent ni comme gain ni comme dépense — juste un déplacement)
+- Pour un dépôt ou un retrait, tu peux cocher **"Compter aussi dans le suivi budgétaire"** et choisir à ce moment précis (pas à la création du compte) un intitulé Épargne ou Objectifs — ça crée automatiquement la transaction correspondante, prise en compte dans Suivi réel et le tableau de bord. Si tu ne coches rien, le mouvement reste uniquement dans Comptes.
+- Historique par compte, avec suppression (qui supprime aussi la transaction liée si elle existe)
+
+### Configuration requise dans Supabase
+
+Ce nouvel onglet a besoin de deux nouvelles tables. Va dans le SQL Editor de ton projet Supabase et exécute :
+
+```sql
+create table accounts (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users not null,
+  name text not null,
+  type text not null default 'autre',
+  created_at timestamp with time zone default now()
+);
+
+create table account_movements (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users not null,
+  account_id uuid references accounts not null,
+  target_account_id uuid references accounts,
+  type text not null,
+  amount numeric not null,
+  date date not null,
+  comment text,
+  linked_group text,
+  linked_label text,
+  linked_transaction_id uuid,
+  created_at timestamp with time zone default now()
+);
+
+alter table accounts enable row level security;
+alter table account_movements enable row level security;
+
+create policy "Chacun gère ses propres comptes"
+  on accounts for all using (auth.uid() = user_id);
+
+create policy "Chacun gère ses propres mouvements"
+  on account_movements for all using (auth.uid() = user_id);
+```
+
+Sans cette étape, l'onglet Comptes restera vide (l'application affiche une liste vide plutôt qu'une erreur, mais rien ne se sauvegardera).
+
+
 
 Dans Transactions, un montant **négatif** est maintenant accepté pour les types Épargne et Objectifs (pour représenter un retrait sur un compte mobile money par exemple). Une fenêtre de confirmation apparaît avant l'enregistrement. Dans l'historique, ces retraits s'affichent en rouge avec la mention "↓ Retrait", et les dépôts (montants positifs) sur ces mêmes catégories sont marqués "↑". Pour tous les autres types (Dépenses, Factures, etc.), le montant doit rester positif.
 

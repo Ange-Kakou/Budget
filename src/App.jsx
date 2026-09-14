@@ -9,6 +9,7 @@ import {
   Settings, Sun, Moon, Camera, X, Scale, Minus,
   CheckCircle2, AlertTriangle, ChevronRight, ChevronLeft, PlayCircle,
   Target, Lock, Mail, AlertOctagon, Sparkles, CircleCheck,
+  Landmark, ArrowDownCircle, ArrowUpCircle, ArrowLeftRight, Link2, Pencil,
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 import Auth from "./Auth";
@@ -17,6 +18,13 @@ const GROUPS = ["Revenus", "Dépenses", "Factures", "Crédits", "Épargne", "Obj
 const TX_GROUPS = GROUPS;
 const SPLIT_GROUPS = ["Épargne", "Objectifs"];
 const FLIP_SIGN_GROUPS = ["Dépenses", "Factures"];
+const ACCOUNT_TYPES = [
+  { value: "mobile_money", label: "Mobile Money" },
+  { value: "banque", label: "Compte bancaire" },
+  { value: "liquide", label: "Liquide" },
+  { value: "autre", label: "Autre" },
+];
+const ACCOUNT_TYPE_ICONS = { mobile_money: "📱", banque: "🏦", liquide: "💵", autre: "💼" };
 const LOCK_OPTIONS = [
   { value: 5, label: "5 minutes" },
   { value: 10, label: "10 minutes" },
@@ -147,6 +155,26 @@ function sortTransactions(list) {
   });
 }
 
+function accountBalance(movements, accountId) {
+  return movements.reduce((bal, m) => {
+    if (m.account_id === accountId) {
+      if (m.type === "depot") return bal + m.amount;
+      if (m.type === "retrait") return bal - m.amount;
+      if (m.type === "transfert") return bal - m.amount;
+    }
+    if (m.target_account_id === accountId && m.type === "transfert") return bal + m.amount;
+    return bal;
+  }, 0);
+}
+
+function sortMovements(list) {
+  return [...list].sort((a, b) => {
+    const dateCmp = (b.date || "").localeCompare(a.date || "");
+    if (dateCmp !== 0) return dateCmp;
+    return (b.created_at || "").localeCompare(a.created_at || "");
+  });
+}
+
 const fmt = (n) =>
   new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 0 }).format(n || 0) + " F";
 
@@ -182,6 +210,8 @@ export default function BudgetApp() {
   const [authChecked, setAuthChecked] = useState(false);
   const [data, setData] = useState(defaultData());
   const [transactions, setTransactions] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  const [movements, setMovements] = useState([]);
   const [tab, setTab] = useState("dashboard");
   const [monthIdx, setMonthIdx] = useState(new Date().getMonth());
   const [loaded, setLoaded] = useState(false);
@@ -273,6 +303,13 @@ export default function BudgetApp() {
           id: t.id, date: t.date, type: t.type, category: t.category, amount: t.amount, comment: t.comment, created_at: t.created_at,
         }))));
       }
+
+      const { data: accRows, error: e3 } = await supabase.from("accounts").select("*").order("created_at", { ascending: true });
+      if (!e3 && accRows) setAccounts(accRows);
+
+      const { data: movRows, error: e4 } = await supabase.from("account_movements").select("*").order("date", { ascending: false }).order("created_at", { ascending: false });
+      if (!e4 && movRows) setMovements(sortMovements(movRows));
+
       setLoaded(true);
     })();
   }, [session]);
@@ -435,6 +472,71 @@ export default function BudgetApp() {
     }
   };
 
+  const addAccount = async (name, type) => {
+    const payload = { id: makeId(), user_id: session.user.id, name, type };
+    const { data: inserted, error } = await supabase.from("accounts").insert(payload).select().single();
+    if (!error && inserted) setAccounts((prev) => [...prev, inserted]);
+  };
+
+  const renameAccount = async (id, name) => {
+    setAccounts((prev) => prev.map((a) => (a.id === id ? { ...a, name } : a)));
+    await supabase.from("accounts").update({ name }).eq("id", id);
+  };
+
+  const deleteAccount = async (id) => {
+    setAccounts((prev) => prev.filter((a) => a.id !== id));
+    setMovements((prev) => prev.filter((m) => m.account_id !== id && m.target_account_id !== id));
+    await supabase.from("accounts").delete().eq("id", id);
+  };
+
+  const addMovement = async (m) => {
+    const movPayload = {
+      id: makeId(),
+      user_id: session.user.id,
+      account_id: m.accountId,
+      target_account_id: m.type === "transfert" ? m.targetAccountId : null,
+      type: m.type,
+      amount: Math.round(Number(m.amount)),
+      date: m.date || todayStr(),
+      comment: m.comment || null,
+      linked_group: m.linkEnabled ? m.linkGroup : null,
+      linked_label: m.linkEnabled ? m.linkLabel : null,
+      linked_transaction_id: null,
+    };
+
+    if (m.linkEnabled && m.linkGroup && m.linkLabel) {
+      const account = accounts.find((a) => a.id === m.accountId);
+      const txPayload = {
+        user_id: session.user.id,
+        date: m.date || todayStr(),
+        type: m.linkGroup,
+        category: m.linkLabel,
+        amount: m.type === "retrait" ? -Math.round(Number(m.amount)) : Math.round(Number(m.amount)),
+        comment: `Compte ${account?.name || ""} — ${m.type === "depot" ? "dépôt" : "retrait"}`,
+      };
+      const { data: txInserted } = await supabase.from("transactions").insert(txPayload).select().single();
+      if (txInserted) {
+        movPayload.linked_transaction_id = txInserted.id;
+        setTransactions((prev) => sortTransactions([
+          { id: txInserted.id, date: txInserted.date, type: txInserted.type, category: txInserted.category, amount: txInserted.amount, comment: txInserted.comment, created_at: txInserted.created_at },
+          ...prev,
+        ]));
+      }
+    }
+
+    const { data: inserted, error } = await supabase.from("account_movements").insert(movPayload).select().single();
+    if (!error && inserted) setMovements((prev) => sortMovements([inserted, ...prev]));
+  };
+
+  const deleteMovement = async (movement) => {
+    setMovements((prev) => prev.filter((m) => m.id !== movement.id));
+    await supabase.from("account_movements").delete().eq("id", movement.id);
+    if (movement.linked_transaction_id) {
+      setTransactions((prev) => prev.filter((t) => t.id !== movement.linked_transaction_id));
+      await supabase.from("transactions").delete().eq("id", movement.linked_transaction_id);
+    }
+  };
+
   const signOut = () => supabase.auth.signOut();
 
   const updateAvatar = async (base64) => {
@@ -517,6 +619,7 @@ export default function BudgetApp() {
           <TabBtn active={tab === "transactions"} onClick={() => setTab("transactions")} icon={<ListPlus size={15} />} label="Transactions" />
           <TabBtn active={tab === "budget"} onClick={() => setTab("budget")} icon={<Table2 size={15} />} label="Budget" />
           <TabBtn active={tab === "suivi"} onClick={() => setTab("suivi")} icon={<Scale size={15} />} label="Suivi réel" />
+          <TabBtn active={tab === "comptes"} onClick={() => setTab("comptes")} icon={<Landmark size={15} />} label="Comptes" />
         </div>
 
         <div className="px-5 sm:px-8 py-6">
@@ -535,6 +638,13 @@ export default function BudgetApp() {
           )}
           {tab === "suivi" && (
             <SuiviReelTab data={data} transactions={transactions} monthIdx={monthIdx} onDistribute={applyDistribution} />
+          )}
+          {tab === "comptes" && (
+            <ComptesTab
+              accounts={accounts} movements={movements} data={data}
+              onAddAccount={addAccount} onRenameAccount={renameAccount} onDeleteAccount={deleteAccount}
+              onAddMovement={addMovement} onDeleteMovement={deleteMovement}
+            />
           )}
         </div>
       </div>
@@ -1892,6 +2002,312 @@ function LockScreen({ pin, onUnlock }) {
             )
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ComptesTab({ accounts, movements, data, onAddAccount, onRenameAccount, onDeleteAccount, onAddMovement, onDeleteMovement }) {
+  const { colors } = useContext(ThemeContext);
+  const [showAddAccount, setShowAddAccount] = useState(false);
+  const [movementFor, setMovementFor] = useState(null); // account object or null
+  const [historyFor, setHistoryFor] = useState(null); // account object or null
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center justify-between">
+        <div className="text-xs" style={{ color: colors.textDim }}>
+          Suis le solde de tes comptes mobile money, bancaires ou en liquide. Chaque mouvement peut, si tu le souhaites, être aussi compté dans ton suivi budgétaire (Épargne/Objectifs).
+        </div>
+      </div>
+
+      {accounts.length === 0 ? (
+        <Card title="Aucun compte pour l'instant">
+          <EmptyState text="Ajoute ton premier compte (mobile money, banque, liquide…) pour commencer à suivre son solde." />
+          <button onClick={() => setShowAddAccount(true)} className="mt-3 flex items-center gap-1.5 text-sm font-semibold" style={{ color: colors.gold }}>
+            <Plus size={15} /> Ajouter un compte
+          </button>
+        </Card>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {accounts.map((acc) => (
+            <AccountCard
+              key={acc.id}
+              account={acc}
+              balance={accountBalance(movements, acc.id)}
+              onAddMovement={() => setMovementFor(acc)}
+              onHistory={() => setHistoryFor(acc)}
+              onRename={(name) => onRenameAccount(acc.id, name)}
+              onDelete={() => onDeleteAccount(acc.id)}
+            />
+          ))}
+          <button
+            onClick={() => setShowAddAccount(true)}
+            className="rounded-xl p-4 sm:p-5 flex items-center justify-center gap-2 text-sm font-medium"
+            style={{ border: `1.5px dashed ${colors.line}`, color: colors.textDim, minHeight: 120 }}
+          >
+            <Plus size={16} /> Ajouter un compte
+          </button>
+        </div>
+      )}
+
+      {showAddAccount && (
+        <AddAccountModal onClose={() => setShowAddAccount(false)} onAdd={(name, type) => { onAddAccount(name, type); setShowAddAccount(false); }} />
+      )}
+
+      {movementFor && (
+        <MovementModal
+          account={movementFor}
+          accounts={accounts}
+          data={data}
+          onClose={() => setMovementFor(null)}
+          onSubmit={(m) => { onAddMovement(m); setMovementFor(null); }}
+        />
+      )}
+
+      {historyFor && (
+        <AccountHistoryModal
+          account={historyFor}
+          accounts={accounts}
+          movements={movements.filter((m) => m.account_id === historyFor.id || m.target_account_id === historyFor.id)}
+          onClose={() => setHistoryFor(null)}
+          onDeleteMovement={onDeleteMovement}
+        />
+      )}
+    </div>
+  );
+}
+
+function AccountCard({ account, balance, onAddMovement, onHistory, onRename, onDelete }) {
+  const { colors } = useContext(ThemeContext);
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(account.name);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  return (
+    <div className="rounded-xl p-4 sm:p-5 flex flex-col gap-3" style={{ background: colors.surface, border: `1px solid ${colors.line}` }}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-lg shrink-0">{ACCOUNT_TYPE_ICONS[account.type] || "💼"}</span>
+          {editing ? (
+            <input
+              value={name} onChange={(e) => setName(e.target.value)}
+              onBlur={() => { setEditing(false); if (name.trim() && name !== account.name) onRename(name.trim()); }}
+              onKeyDown={(e) => e.key === "Enter" && e.target.blur()}
+              autoFocus
+              className="text-sm font-medium bg-transparent min-w-0"
+              style={{ color: colors.text, border: "none", outline: "none" }}
+            />
+          ) : (
+            <span className="text-sm font-medium truncate" style={{ color: colors.text }}>{account.name}</span>
+          )}
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          <button onClick={() => setEditing(true)} style={{ color: colors.textDim }}><Pencil size={13} /></button>
+          <button onClick={() => setConfirmDelete(true)} style={{ color: colors.textDim }}><Trash2 size={13} /></button>
+        </div>
+      </div>
+
+      <div className="num text-2xl font-semibold" style={{ color: balance < 0 ? colors.coral : colors.text }}>{fmt(balance)}</div>
+      <div className="text-[11px]" style={{ color: colors.textDim }}>{ACCOUNT_TYPES.find((t) => t.value === account.type)?.label || "Autre"}</div>
+
+      <div className="flex gap-2 mt-1">
+        <button onClick={onAddMovement} className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-md text-xs font-semibold" style={{ background: colors.gold, color: colors.ink }}>
+          <Plus size={13} /> Mouvement
+        </button>
+        <button onClick={onHistory} className="px-3 py-2 rounded-md text-xs font-medium" style={{ background: colors.surface2, color: colors.text }}>
+          Historique
+        </button>
+      </div>
+
+      {confirmDelete && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center px-5" style={{ background: "rgba(0,0,0,0.5)" }}>
+          <div className="w-full max-w-xs rounded-xl p-5" style={{ background: colors.surface, border: `1px solid ${colors.line}` }}>
+            <div className="text-sm mb-4" style={{ color: colors.text }}>
+              Supprimer le compte « {account.name} » ? Tous ses mouvements seront aussi supprimés (les transactions budgétaires liées resteront, sauf si tu les supprimes depuis l'historique).
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setConfirmDelete(false)} className="flex-1 py-2 rounded-md text-sm font-medium" style={{ background: colors.surface2, color: colors.text }}>Annuler</button>
+              <button onClick={() => { onDelete(); setConfirmDelete(false); }} className="flex-1 py-2 rounded-md text-sm font-semibold" style={{ background: colors.coral, color: "#fff" }}>Supprimer</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AddAccountModal({ onClose, onAdd }) {
+  const { colors } = useContext(ThemeContext);
+  const [name, setName] = useState("");
+  const [type, setType] = useState("mobile_money");
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.5)" }}>
+      <div className="w-full max-w-sm rounded-xl p-5" style={{ background: colors.surface, border: `1px solid ${colors.line}` }}>
+        <div className="flex items-center justify-between mb-4">
+          <span className="disp text-lg" style={{ color: colors.text }}>Nouveau compte</span>
+          <button onClick={onClose} style={{ color: colors.textDim }}><X size={18} /></button>
+        </div>
+        <div className="flex flex-col gap-3">
+          <Field label="Nom du compte">
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex : Orange Money" className="w-full" style={{ background: colors.surface2, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "7px 10px", color: colors.text, fontSize: 13.5, outline: "none" }} />
+          </Field>
+          <Field label="Type de compte">
+            <select value={type} onChange={(e) => setType(e.target.value)} className="w-full" style={{ background: colors.surface2, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "7px 10px", color: colors.text, fontSize: 13.5, outline: "none" }}>
+              {ACCOUNT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+          </Field>
+          <button
+            onClick={() => name.trim() && onAdd(name.trim(), type)}
+            disabled={!name.trim()}
+            className="mt-1 py-2.5 rounded-md text-sm font-semibold"
+            style={{ background: name.trim() ? colors.gold : colors.surface2, color: name.trim() ? colors.ink : colors.textDim }}
+          >
+            Créer le compte
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MovementModal({ account, accounts, data, onClose, onSubmit }) {
+  const { colors } = useContext(ThemeContext);
+  const [type, setType] = useState("depot");
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(todayStr());
+  const [comment, setComment] = useState("");
+  const [targetAccountId, setTargetAccountId] = useState("");
+  const [linkEnabled, setLinkEnabled] = useState(false);
+  const [linkGroup, setLinkGroup] = useState("Épargne");
+  const [linkLabel, setLinkLabel] = useState("");
+  const [error, setError] = useState("");
+
+  const otherAccounts = accounts.filter((a) => a.id !== account.id);
+  const labelOptions = (data[linkGroup] || []).map((r) => r.name);
+
+  const submit = () => {
+    if (!amount || Number(amount) <= 0) { setError("Indique un montant positif."); return; }
+    if (type === "transfert" && !targetAccountId) { setError("Choisis un compte de destination."); return; }
+    if (linkEnabled && type !== "transfert" && !linkLabel) { setError("Choisis un intitulé à lier, ou décoche l'option."); return; }
+    onSubmit({ accountId: account.id, type, amount, date, comment, targetAccountId, linkEnabled: linkEnabled && type !== "transfert", linkGroup, linkLabel });
+  };
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.5)" }}>
+      <div className="w-full max-w-sm rounded-xl p-5" style={{ background: colors.surface, border: `1px solid ${colors.line}` }}>
+        <div className="flex items-center justify-between mb-4">
+          <span className="disp text-lg" style={{ color: colors.text }}>Mouvement — {account.name}</span>
+          <button onClick={onClose} style={{ color: colors.textDim }}><X size={18} /></button>
+        </div>
+
+        <div className="flex rounded-md overflow-hidden mb-4" style={{ border: `1px solid ${colors.line}` }}>
+          {[
+            { v: "depot", l: "Dépôt", Icon: ArrowUpCircle },
+            { v: "retrait", l: "Retrait", Icon: ArrowDownCircle },
+            { v: "transfert", l: "Transfert", Icon: ArrowLeftRight },
+          ].map(({ v, l, Icon }) => (
+            <button
+              key={v}
+              onClick={() => setType(v)}
+              className="flex-1 flex items-center justify-center gap-1 py-2 text-xs font-medium"
+              style={{ background: type === v ? colors.gold : "transparent", color: type === v ? colors.ink : colors.textDim }}
+            >
+              <Icon size={13} /> {l}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex flex-col gap-3">
+          {type === "transfert" && (
+            <Field label="Vers quel compte ?">
+              <select value={targetAccountId} onChange={(e) => setTargetAccountId(e.target.value)} className="w-full" style={{ background: colors.surface2, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "7px 10px", color: colors.text, fontSize: 13.5, outline: "none" }}>
+                <option value="">Choisir…</option>
+                {otherAccounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            </Field>
+          )}
+          <Field label="Montant (F CFA)">
+            <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" className="w-full num" style={{ background: colors.surface2, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "7px 10px", color: colors.text, fontSize: 13.5, outline: "none" }} />
+          </Field>
+          <Field label="Date">
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full" style={{ background: colors.surface2, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "7px 10px", color: colors.text, fontSize: 13.5, outline: "none" }} />
+          </Field>
+          <Field label="Commentaire">
+            <input type="text" value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Optionnel" className="w-full" style={{ background: colors.surface2, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "7px 10px", color: colors.text, fontSize: 13.5, outline: "none" }} />
+          </Field>
+
+          {type !== "transfert" && (
+            <div className="p-3 rounded-lg" style={{ background: colors.surface2 }}>
+              <label className="flex items-center gap-2 text-xs font-medium" style={{ color: colors.text }}>
+                <input type="checkbox" checked={linkEnabled} onChange={(e) => setLinkEnabled(e.target.checked)} />
+                <Link2 size={13} /> Compter aussi dans le suivi budgétaire
+              </label>
+              {linkEnabled && (
+                <div className="flex flex-col gap-2 mt-2.5">
+                  <select value={linkGroup} onChange={(e) => { setLinkGroup(e.target.value); setLinkLabel(""); }} className="w-full text-xs" style={{ background: colors.surface3, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "6px 8px", color: colors.text, outline: "none" }}>
+                    {SPLIT_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                  <select value={linkLabel} onChange={(e) => setLinkLabel(e.target.value)} className="w-full text-xs" style={{ background: colors.surface3, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "6px 8px", color: colors.text, outline: "none" }}>
+                    <option value="">Choisir un intitulé…</option>
+                    {labelOptions.map((l) => <option key={l} value={l}>{l}</option>)}
+                  </select>
+                </div>
+              )}
+            </div>
+          )}
+
+          {error && <div className="text-xs" style={{ color: colors.coral }}>{error}</div>}
+
+          <button onClick={submit} className="mt-1 py-2.5 rounded-md text-sm font-semibold" style={{ background: colors.gold, color: colors.ink }}>
+            Enregistrer
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AccountHistoryModal({ account, accounts, movements, onClose, onDeleteMovement }) {
+  const { colors } = useContext(ThemeContext);
+  const accName = (id) => accounts.find((a) => a.id === id)?.name || "?";
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center px-4" style={{ background: "rgba(0,0,0,0.5)" }}>
+      <div className="w-full max-w-lg rounded-xl p-5 max-h-[80vh] overflow-y-auto" style={{ background: colors.surface, border: `1px solid ${colors.line}` }}>
+        <div className="flex items-center justify-between mb-4">
+          <span className="disp text-lg" style={{ color: colors.text }}>Historique — {account.name}</span>
+          <button onClick={onClose} style={{ color: colors.textDim }}><X size={18} /></button>
+        </div>
+        {movements.length === 0 ? (
+          <EmptyState text="Aucun mouvement enregistré pour ce compte." />
+        ) : (
+          <div className="flex flex-col gap-2">
+            {movements.map((m) => {
+              const isOut = m.account_id === account.id;
+              const label = m.type === "transfert"
+                ? (isOut ? `Transfert vers ${accName(m.target_account_id)}` : `Transfert depuis ${accName(m.account_id)}`)
+                : m.type === "depot" ? "Dépôt" : "Retrait";
+              const sign = m.type === "depot" || (m.type === "transfert" && !isOut) ? "+" : "-";
+              const color = sign === "+" ? colors.mint : colors.coral;
+              return (
+                <div key={m.id} className="flex items-center justify-between gap-2 pb-2" style={{ borderBottom: `1px solid ${colors.line}` }}>
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium" style={{ color: colors.text }}>{label}</div>
+                    <div className="text-[11px]" style={{ color: colors.textDim }}>
+                      {formatDateFR(m.date)}{m.comment ? ` — ${m.comment}` : ""}{m.linked_label ? ` · 🔗 ${m.linked_group} > ${m.linked_label}` : ""}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="num text-sm font-semibold" style={{ color }}>{sign}{fmt(m.amount)}</span>
+                    <button onClick={() => onDeleteMovement(m)} style={{ color: colors.textDim }}><Trash2 size={13} /></button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
