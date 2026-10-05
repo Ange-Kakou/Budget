@@ -17,6 +17,7 @@ import Auth from "./Auth";
 const GROUPS = ["Revenus", "Dépenses", "Factures", "Crédits", "Épargne", "Objectifs"];
 const TX_GROUPS = GROUPS;
 const SPLIT_GROUPS = ["Épargne", "Objectifs"];
+const ACCOUNT_TRACE_TYPE = "Compte";
 const FLIP_SIGN_GROUPS = ["Dépenses", "Factures"];
 const ACCOUNT_TYPES = [
   { value: "mobile_money", label: "Mobile Money" },
@@ -490,35 +491,69 @@ export default function BudgetApp() {
   };
 
   const addMovement = async (m) => {
+    const amt = Math.round(Number(m.amount));
+    const account = accounts.find((a) => a.id === m.accountId);
+    const targetAccount = m.type === "transfert" ? accounts.find((a) => a.id === m.targetAccountId) : null;
+    const date = m.date || todayStr();
+
     const movPayload = {
       id: makeId(),
       user_id: session.user.id,
       account_id: m.accountId,
       target_account_id: m.type === "transfert" ? m.targetAccountId : null,
       type: m.type,
-      amount: Math.round(Number(m.amount)),
-      date: m.date || todayStr(),
+      amount: amt,
+      date,
       comment: m.comment || null,
-      linked_group: m.linkEnabled ? m.linkGroup : null,
-      linked_label: m.linkEnabled ? m.linkLabel : null,
+      linked_group: null,
+      linked_label: null,
       linked_transaction_id: null,
     };
 
-    if (m.linkEnabled && m.linkGroup && m.linkLabel) {
-      const account = accounts.find((a) => a.id === m.accountId);
-      const txPayload = {
-        user_id: session.user.id,
-        date: m.date || todayStr(),
-        type: m.linkGroup,
-        category: m.linkLabel,
-        amount: m.type === "retrait" ? -Math.round(Number(m.amount)) : Math.round(Number(m.amount)),
-        comment: `Compte ${account?.name || ""} — ${m.type === "depot" ? "dépôt" : "retrait"}`,
-      };
-      const { data: txInserted } = await supabase.from("transactions").insert(txPayload).select().single();
+    // Détermine si ce mouvement doit créer une transaction budgétaire (revenu ou épargne),
+    // sinon on laisse quand même une trace neutre (type "Compte") dans l'historique.
+    let txPayload = null;
+    if (m.type === "depot" && m.depositKind === "epargne" && m.linkGroup && m.linkLabel) {
+      txPayload = { type: m.linkGroup, category: m.linkLabel, amount: amt, comment: `Compte ${account?.name || ""} — dépôt mis de côté` };
+    } else if (m.type === "depot" && m.depositKind === "revenu" && m.linkLabel) {
+      txPayload = { type: "Revenus", category: m.linkLabel, amount: amt, comment: `Compte ${account?.name || ""} — revenu reçu` };
+    } else if (m.type === "retrait" && m.linkEnabled && m.linkGroup && m.linkLabel) {
+      txPayload = { type: m.linkGroup, category: m.linkLabel, amount: -amt, comment: `Compte ${account?.name || ""} — retrait` };
+    }
+
+    if (txPayload) {
+      const { data: txInserted } = await supabase.from("transactions").insert({ user_id: session.user.id, date, ...txPayload }).select().single();
       if (txInserted) {
+        movPayload.linked_group = txInserted.type;
+        movPayload.linked_label = txInserted.category;
         movPayload.linked_transaction_id = txInserted.id;
         setTransactions((prev) => sortTransactions([
           { id: txInserted.id, date: txInserted.date, type: txInserted.type, category: txInserted.category, amount: txInserted.amount, comment: txInserted.comment, created_at: txInserted.created_at },
+          ...prev,
+        ]));
+      }
+    } else {
+      let traceCategory, traceAmount, traceComment;
+      if (m.type === "transfert") {
+        traceCategory = `${account?.name || "?"} → ${targetAccount?.name || "?"}`;
+        traceAmount = amt;
+        traceComment = m.comment || "Transfert entre comptes";
+      } else if (m.type === "depot") {
+        traceCategory = account?.name || "Compte";
+        traceAmount = amt;
+        traceComment = m.comment || "Dépôt (argent en transit, ne compte pas dans le budget)";
+      } else {
+        traceCategory = account?.name || "Compte";
+        traceAmount = -amt;
+        traceComment = m.comment || "Retrait";
+      }
+      const { data: traceInserted } = await supabase.from("transactions").insert({
+        user_id: session.user.id, date, type: ACCOUNT_TRACE_TYPE, category: traceCategory, amount: traceAmount, comment: traceComment,
+      }).select().single();
+      if (traceInserted) {
+        movPayload.linked_transaction_id = traceInserted.id;
+        setTransactions((prev) => sortTransactions([
+          { id: traceInserted.id, date: traceInserted.date, type: traceInserted.type, category: traceInserted.category, amount: traceInserted.amount, comment: traceInserted.comment, created_at: traceInserted.created_at },
           ...prev,
         ]));
       }
@@ -1343,6 +1378,7 @@ function TransactionsTab({ txForm, setTxForm, submitTx, transactions, onDeleteTx
           <select value={filters.type} onChange={(e) => setFilters((f) => ({ ...f, type: e.target.value }))} className="text-xs" style={inputStyle}>
             <option value="">Tous types</option>
             {groups.map((g) => <option key={g} value={g}>{g}</option>)}
+            <option value={ACCOUNT_TRACE_TYPE}>Compte</option>
           </select>
           <input type="text" placeholder="Catégorie" value={filters.category} onChange={(e) => setFilters((f) => ({ ...f, category: e.target.value }))} className="text-xs" style={inputStyle} />
           <input type="text" placeholder="Commentaire" value={filters.comment} onChange={(e) => setFilters((f) => ({ ...f, comment: e.target.value }))} className="text-xs" style={inputStyle} />
@@ -2179,19 +2215,35 @@ function MovementModal({ account, accounts, data, onClose, onSubmit }) {
   const [date, setDate] = useState(todayStr());
   const [comment, setComment] = useState("");
   const [targetAccountId, setTargetAccountId] = useState("");
+  // Dépôt : nature de l'argent
+  const [depositKind, setDepositKind] = useState("epargne"); // epargne | revenu | transit
+  const [depositEpargneGroup, setDepositEpargneGroup] = useState("Épargne");
+  const [depositEpargneLabel, setDepositEpargneLabel] = useState("");
+  const [depositRevenuLabel, setDepositRevenuLabel] = useState("");
+  // Retrait : lien optionnel
   const [linkEnabled, setLinkEnabled] = useState(false);
   const [linkGroup, setLinkGroup] = useState("Épargne");
   const [linkLabel, setLinkLabel] = useState("");
   const [error, setError] = useState("");
 
   const otherAccounts = accounts.filter((a) => a.id !== account.id);
-  const labelOptions = (data[linkGroup] || []).map((r) => r.name);
+  const epargneLabelOptions = (data[depositEpargneGroup] || []).map((r) => r.name);
+  const revenuLabelOptions = (data.Revenus || []).map((r) => r.name);
+  const retraitLabelOptions = (data[linkGroup] || []).map((r) => r.name);
 
   const submit = () => {
     if (!amount || Number(amount) <= 0) { setError("Indique un montant positif."); return; }
     if (type === "transfert" && !targetAccountId) { setError("Choisis un compte de destination."); return; }
-    if (linkEnabled && type !== "transfert" && !linkLabel) { setError("Choisis un intitulé à lier, ou décoche l'option."); return; }
-    onSubmit({ accountId: account.id, type, amount, date, comment, targetAccountId, linkEnabled: linkEnabled && type !== "transfert", linkGroup, linkLabel });
+    if (type === "depot" && depositKind === "epargne" && !depositEpargneLabel) { setError("Choisis l'intitulé où ranger ce dépôt."); return; }
+    if (type === "depot" && depositKind === "revenu" && !depositRevenuLabel) { setError("Choisis l'intitulé de revenu correspondant."); return; }
+    if (type === "retrait" && linkEnabled && !linkLabel) { setError("Choisis un intitulé à lier, ou décoche l'option."); return; }
+    onSubmit({
+      accountId: account.id, type, amount, date, comment, targetAccountId,
+      depositKind,
+      linkGroup: type === "depot" ? depositEpargneGroup : linkGroup,
+      linkLabel: type === "depot" ? (depositKind === "revenu" ? depositRevenuLabel : depositEpargneLabel) : linkLabel,
+      linkEnabled: type === "retrait" ? linkEnabled : false,
+    });
   };
 
   return (
@@ -2238,24 +2290,70 @@ function MovementModal({ account, accounts, data, onClose, onSubmit }) {
             <input type="text" value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Optionnel" className="w-full" style={{ background: colors.surface2, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "7px 10px", color: colors.text, fontSize: 13.5, outline: "none" }} />
           </Field>
 
-          {type !== "transfert" && (
+          {type === "depot" && (
+            <div className="p-3 rounded-lg flex flex-col gap-2" style={{ background: colors.surface2 }}>
+              <div className="text-xs font-medium flex items-center gap-1.5" style={{ color: colors.text }}><Link2 size={13} /> D'où vient cet argent ?</div>
+
+              <label className="flex items-start gap-2 text-xs p-2 rounded-md cursor-pointer" style={{ background: depositKind === "epargne" ? colors.surface3 : "transparent", color: colors.text }}>
+                <input type="radio" checked={depositKind === "epargne"} onChange={() => setDepositKind("epargne")} className="mt-0.5" />
+                <span><span className="font-medium">Je range une partie de mon revenu</span><br /><span style={{ color: colors.textDim }}>Ce montant sera déduit de ton solde disponible (épargne/objectif).</span></span>
+              </label>
+              {depositKind === "epargne" && (
+                <div className="flex flex-col gap-2 pl-6">
+                  <select value={depositEpargneGroup} onChange={(e) => { setDepositEpargneGroup(e.target.value); setDepositEpargneLabel(""); }} className="w-full text-xs" style={{ background: colors.surface3, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "6px 8px", color: colors.text, outline: "none" }}>
+                    {SPLIT_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                  <select value={depositEpargneLabel} onChange={(e) => setDepositEpargneLabel(e.target.value)} className="w-full text-xs" style={{ background: colors.surface3, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "6px 8px", color: colors.text, outline: "none" }}>
+                    <option value="">Choisir un intitulé…</option>
+                    {epargneLabelOptions.map((l) => <option key={l} value={l}>{l}</option>)}
+                  </select>
+                </div>
+              )}
+
+              <label className="flex items-start gap-2 text-xs p-2 rounded-md cursor-pointer" style={{ background: depositKind === "revenu" ? colors.surface3 : "transparent", color: colors.text }}>
+                <input type="radio" checked={depositKind === "revenu"} onChange={() => setDepositKind("revenu")} className="mt-0.5" />
+                <span><span className="font-medium">Je reçois un revenu</span><br /><span style={{ color: colors.textDim }}>S'ajoute à ton solde revenu (ex: salaire versé directement, argent reçu).</span></span>
+              </label>
+              {depositKind === "revenu" && (
+                <div className="pl-6">
+                  <select value={depositRevenuLabel} onChange={(e) => setDepositRevenuLabel(e.target.value)} className="w-full text-xs" style={{ background: colors.surface3, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "6px 8px", color: colors.text, outline: "none" }}>
+                    <option value="">Choisir un intitulé…</option>
+                    {revenuLabelOptions.map((l) => <option key={l} value={l}>{l}</option>)}
+                  </select>
+                </div>
+              )}
+
+              <label className="flex items-start gap-2 text-xs p-2 rounded-md cursor-pointer" style={{ background: depositKind === "transit" ? colors.surface3 : "transparent", color: colors.text }}>
+                <input type="radio" checked={depositKind === "transit"} onChange={() => setDepositKind("transit")} className="mt-0.5" />
+                <span><span className="font-medium">Cet argent ne m'appartient pas</span><br /><span style={{ color: colors.textDim }}>Il ne fait que transiter — aucun impact sur tes totaux, juste une trace dans Transactions.</span></span>
+              </label>
+            </div>
+          )}
+
+          {type === "retrait" && (
             <div className="p-3 rounded-lg" style={{ background: colors.surface2 }}>
               <label className="flex items-center gap-2 text-xs font-medium" style={{ color: colors.text }}>
                 <input type="checkbox" checked={linkEnabled} onChange={(e) => setLinkEnabled(e.target.checked)} />
                 <Link2 size={13} /> Compter aussi dans le suivi budgétaire
               </label>
-              {linkEnabled && (
+              {linkEnabled ? (
                 <div className="flex flex-col gap-2 mt-2.5">
                   <select value={linkGroup} onChange={(e) => { setLinkGroup(e.target.value); setLinkLabel(""); }} className="w-full text-xs" style={{ background: colors.surface3, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "6px 8px", color: colors.text, outline: "none" }}>
                     {SPLIT_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
                   </select>
                   <select value={linkLabel} onChange={(e) => setLinkLabel(e.target.value)} className="w-full text-xs" style={{ background: colors.surface3, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "6px 8px", color: colors.text, outline: "none" }}>
                     <option value="">Choisir un intitulé…</option>
-                    {labelOptions.map((l) => <option key={l} value={l}>{l}</option>)}
+                    {retraitLabelOptions.map((l) => <option key={l} value={l}>{l}</option>)}
                   </select>
                 </div>
+              ) : (
+                <div className="text-[11px] mt-1" style={{ color: colors.textDim }}>Sans lien, ce retrait apparaîtra quand même dans Transactions (catégorie "Compte"), sans impacter tes totaux.</div>
               )}
             </div>
+          )}
+
+          {type === "transfert" && (
+            <div className="text-[11px]" style={{ color: colors.textDim }}>Ce transfert sera visible dans Transactions (catégorie "Compte"), sans impacter tes totaux.</div>
           )}
 
           {error && <div className="text-xs" style={{ color: colors.coral }}>{error}</div>}

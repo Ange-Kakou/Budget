@@ -32,7 +32,20 @@ Si ce n'est pas déjà fait, exécute le script SQL fourni dans l'éditeur SQL d
 
 Après avoir redéployé sur Vercel (Deployments > Redeploy), crée ton compte directement depuis l'application avec le bouton "Créer un compte".
 
-## Mise à jour : nouvel onglet Comptes (mobile money, banque, liquide)
+## Mise à jour : 3 natures de dépôt + trace systématique dans Transactions
+
+### Dépôts sur un compte : 3 choix clairs
+Quand tu enregistres un **dépôt**, tu choisis maintenant sa nature :
+1. **Je range une partie de mon revenu** → déduit de ton solde disponible (lié à Épargne/Objectifs, comme avant)
+2. **Je reçois un revenu** → s'ajoute à ton solde revenu (lié à un intitulé Revenus) — utile quand un employeur ou un tiers te paie directement sur ce compte
+3. **Cet argent ne m'appartient pas** → aucun impact sur tes totaux (argent en transit pour quelqu'un d'autre)
+
+### Trace systématique
+Désormais, **toute opération sur un compte** (dépôt, retrait, transfert) laisse une trace dans l'onglet Transactions :
+- Si elle est liée à Revenus/Épargne/Objectifs → c'est cette transaction-là qui apparaît
+- Sinon (transit, retrait non lié, transfert) → une transaction neutre de type **"Compte"** est créée, visible et filtrable dans Transactions, mais qui ne compte dans aucun total ni graphique
+
+
 
 ### Ce qui a été ajouté
 Un onglet **Comptes** permet de suivre le solde de plusieurs comptes (mobile money, bancaire, liquide, autre) :
