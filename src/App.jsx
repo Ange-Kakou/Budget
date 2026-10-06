@@ -517,8 +517,10 @@ export default function BudgetApp() {
       txPayload = { type: m.linkGroup, category: m.linkLabel, amount: amt, comment: `Compte ${account?.name || ""} — dépôt mis de côté` };
     } else if (m.type === "depot" && m.depositKind === "revenu" && m.linkLabel) {
       txPayload = { type: "Revenus", category: m.linkLabel, amount: amt, comment: `Compte ${account?.name || ""} — revenu reçu` };
-    } else if (m.type === "retrait" && m.linkEnabled && m.linkGroup && m.linkLabel) {
-      txPayload = { type: m.linkGroup, category: m.linkLabel, amount: -amt, comment: `Compte ${account?.name || ""} — retrait` };
+    } else if (m.type === "retrait" && m.withdrawalKind === "epargne" && m.linkGroup && m.linkLabel) {
+      txPayload = { type: m.linkGroup, category: m.linkLabel, amount: -amt, comment: `Compte ${account?.name || ""} — reprise d'épargne` };
+    } else if (m.type === "retrait" && m.withdrawalKind === "depense" && m.linkGroup && m.linkLabel) {
+      txPayload = { type: m.linkGroup, category: m.linkLabel, amount: amt, comment: `Compte ${account?.name || ""} — paiement` };
     }
 
     if (txPayload) {
@@ -2220,29 +2222,33 @@ function MovementModal({ account, accounts, data, onClose, onSubmit }) {
   const [depositEpargneGroup, setDepositEpargneGroup] = useState("Épargne");
   const [depositEpargneLabel, setDepositEpargneLabel] = useState("");
   const [depositRevenuLabel, setDepositRevenuLabel] = useState("");
-  // Retrait : lien optionnel
-  const [linkEnabled, setLinkEnabled] = useState(false);
-  const [linkGroup, setLinkGroup] = useState("Épargne");
-  const [linkLabel, setLinkLabel] = useState("");
+  // Retrait : nature de l'argent (symétrique au dépôt)
+  const [withdrawalKind, setWithdrawalKind] = useState("epargne"); // epargne | depense | transit
+  const [withdrawalEpargneGroup, setWithdrawalEpargneGroup] = useState("Épargne");
+  const [withdrawalEpargneLabel, setWithdrawalEpargneLabel] = useState("");
+  const [withdrawalDepenseGroup, setWithdrawalDepenseGroup] = useState("Dépenses");
+  const [withdrawalDepenseLabel, setWithdrawalDepenseLabel] = useState("");
   const [error, setError] = useState("");
 
   const otherAccounts = accounts.filter((a) => a.id !== account.id);
   const epargneLabelOptions = (data[depositEpargneGroup] || []).map((r) => r.name);
   const revenuLabelOptions = (data.Revenus || []).map((r) => r.name);
-  const retraitLabelOptions = (data[linkGroup] || []).map((r) => r.name);
+  const withdrawalEpargneLabelOptions = (data[withdrawalEpargneGroup] || []).map((r) => r.name);
+  const withdrawalDepenseLabelOptions = (data[withdrawalDepenseGroup] || []).map((r) => r.name);
+  const DEPENSE_GROUPS = ["Dépenses", "Factures", "Crédits"];
 
   const submit = () => {
     if (!amount || Number(amount) <= 0) { setError("Indique un montant positif."); return; }
     if (type === "transfert" && !targetAccountId) { setError("Choisis un compte de destination."); return; }
     if (type === "depot" && depositKind === "epargne" && !depositEpargneLabel) { setError("Choisis l'intitulé où ranger ce dépôt."); return; }
     if (type === "depot" && depositKind === "revenu" && !depositRevenuLabel) { setError("Choisis l'intitulé de revenu correspondant."); return; }
-    if (type === "retrait" && linkEnabled && !linkLabel) { setError("Choisis un intitulé à lier, ou décoche l'option."); return; }
+    if (type === "retrait" && withdrawalKind === "epargne" && !withdrawalEpargneLabel) { setError("Choisis l'intitulé d'épargne concerné."); return; }
+    if (type === "retrait" && withdrawalKind === "depense" && !withdrawalDepenseLabel) { setError("Choisis l'intitulé de dépense concerné."); return; }
     onSubmit({
       accountId: account.id, type, amount, date, comment, targetAccountId,
-      depositKind,
-      linkGroup: type === "depot" ? depositEpargneGroup : linkGroup,
-      linkLabel: type === "depot" ? (depositKind === "revenu" ? depositRevenuLabel : depositEpargneLabel) : linkLabel,
-      linkEnabled: type === "retrait" ? linkEnabled : false,
+      depositKind, withdrawalKind,
+      linkGroup: type === "depot" ? depositEpargneGroup : (withdrawalKind === "depense" ? withdrawalDepenseGroup : withdrawalEpargneGroup),
+      linkLabel: type === "depot" ? (depositKind === "revenu" ? depositRevenuLabel : depositEpargneLabel) : (withdrawalKind === "depense" ? withdrawalDepenseLabel : withdrawalEpargneLabel),
     });
   };
 
@@ -2331,24 +2337,45 @@ function MovementModal({ account, accounts, data, onClose, onSubmit }) {
           )}
 
           {type === "retrait" && (
-            <div className="p-3 rounded-lg" style={{ background: colors.surface2 }}>
-              <label className="flex items-center gap-2 text-xs font-medium" style={{ color: colors.text }}>
-                <input type="checkbox" checked={linkEnabled} onChange={(e) => setLinkEnabled(e.target.checked)} />
-                <Link2 size={13} /> Compter aussi dans le suivi budgétaire
+            <div className="p-3 rounded-lg flex flex-col gap-2" style={{ background: colors.surface2 }}>
+              <div className="text-xs font-medium flex items-center gap-1.5" style={{ color: colors.text }}><Link2 size={13} /> À quoi correspond ce retrait ?</div>
+
+              <label className="flex items-start gap-2 text-xs p-2 rounded-md cursor-pointer" style={{ background: withdrawalKind === "epargne" ? colors.surface3 : "transparent", color: colors.text }}>
+                <input type="radio" checked={withdrawalKind === "epargne"} onChange={() => setWithdrawalKind("epargne")} className="mt-0.5" />
+                <span><span className="font-medium">Je reprends de l'épargne mise de côté</span><br /><span style={{ color: colors.textDim }}>Annule une partie de ce que tu avais rangé (Épargne/Objectifs).</span></span>
               </label>
-              {linkEnabled ? (
-                <div className="flex flex-col gap-2 mt-2.5">
-                  <select value={linkGroup} onChange={(e) => { setLinkGroup(e.target.value); setLinkLabel(""); }} className="w-full text-xs" style={{ background: colors.surface3, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "6px 8px", color: colors.text, outline: "none" }}>
+              {withdrawalKind === "epargne" && (
+                <div className="flex flex-col gap-2 pl-6">
+                  <select value={withdrawalEpargneGroup} onChange={(e) => { setWithdrawalEpargneGroup(e.target.value); setWithdrawalEpargneLabel(""); }} className="w-full text-xs" style={{ background: colors.surface3, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "6px 8px", color: colors.text, outline: "none" }}>
                     {SPLIT_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
                   </select>
-                  <select value={linkLabel} onChange={(e) => setLinkLabel(e.target.value)} className="w-full text-xs" style={{ background: colors.surface3, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "6px 8px", color: colors.text, outline: "none" }}>
+                  <select value={withdrawalEpargneLabel} onChange={(e) => setWithdrawalEpargneLabel(e.target.value)} className="w-full text-xs" style={{ background: colors.surface3, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "6px 8px", color: colors.text, outline: "none" }}>
                     <option value="">Choisir un intitulé…</option>
-                    {retraitLabelOptions.map((l) => <option key={l} value={l}>{l}</option>)}
+                    {withdrawalEpargneLabelOptions.map((l) => <option key={l} value={l}>{l}</option>)}
                   </select>
                 </div>
-              ) : (
-                <div className="text-[11px] mt-1" style={{ color: colors.textDim }}>Sans lien, ce retrait apparaîtra quand même dans Transactions (catégorie "Compte"), sans impacter tes totaux.</div>
               )}
+
+              <label className="flex items-start gap-2 text-xs p-2 rounded-md cursor-pointer" style={{ background: withdrawalKind === "depense" ? colors.surface3 : "transparent", color: colors.text }}>
+                <input type="radio" checked={withdrawalKind === "depense"} onChange={() => setWithdrawalKind("depense")} className="mt-0.5" />
+                <span><span className="font-medium">Je paie une dépense</span><br /><span style={{ color: colors.textDim }}>Enregistre une vraie dépense (ex: facture d'électricité) dans Dépenses/Factures/Crédits.</span></span>
+              </label>
+              {withdrawalKind === "depense" && (
+                <div className="flex flex-col gap-2 pl-6">
+                  <select value={withdrawalDepenseGroup} onChange={(e) => { setWithdrawalDepenseGroup(e.target.value); setWithdrawalDepenseLabel(""); }} className="w-full text-xs" style={{ background: colors.surface3, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "6px 8px", color: colors.text, outline: "none" }}>
+                    {DEPENSE_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                  <select value={withdrawalDepenseLabel} onChange={(e) => setWithdrawalDepenseLabel(e.target.value)} className="w-full text-xs" style={{ background: colors.surface3, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "6px 8px", color: colors.text, outline: "none" }}>
+                    <option value="">Choisir un intitulé…</option>
+                    {withdrawalDepenseLabelOptions.map((l) => <option key={l} value={l}>{l}</option>)}
+                  </select>
+                </div>
+              )}
+
+              <label className="flex items-start gap-2 text-xs p-2 rounded-md cursor-pointer" style={{ background: withdrawalKind === "transit" ? colors.surface3 : "transparent", color: colors.text }}>
+                <input type="radio" checked={withdrawalKind === "transit"} onChange={() => setWithdrawalKind("transit")} className="mt-0.5" />
+                <span><span className="font-medium">Aucun des deux</span><br /><span style={{ color: colors.textDim }}>Aucun impact sur tes totaux — juste une trace dans Transactions.</span></span>
+              </label>
             </div>
           )}
 

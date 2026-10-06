@@ -32,7 +32,14 @@ Si ce n'est pas déjà fait, exécute le script SQL fourni dans l'éditeur SQL d
 
 Après avoir redéployé sur Vercel (Deployments > Redeploy), crée ton compte directement depuis l'application avec le bouton "Créer un compte".
 
-## Mise à jour : 3 natures de dépôt + trace systématique dans Transactions
+## Mise à jour : retraits symétriques aux dépôts
+
+Les **retraits** suivent maintenant la même logique que les dépôts, avec 3 natures possibles :
+1. **Je reprends de l'épargne mise de côté** → lié à Épargne/Objectifs (annule une partie de ce que tu avais rangé)
+2. **Je paie une dépense** *(nouveau)* → lié à Dépenses/Factures/Crédits (enregistre une vraie dépense, ex: paiement de la facture d'électricité depuis l'argent mis de côté)
+3. **Aucun des deux** → aucun impact sur tes totaux, juste une trace dans Transactions (catégorie "Compte")
+
+
 
 ### Dépôts sur un compte : 3 choix clairs
 Quand tu enregistres un **dépôt**, tu choisis maintenant sa nature :
