@@ -32,7 +32,20 @@ Si ce n'est pas déjà fait, exécute le script SQL fourni dans l'éditeur SQL d
 
 Après avoir redéployé sur Vercel (Deployments > Redeploy), crée ton compte directement depuis l'application avec le bouton "Créer un compte".
 
-## Mise à jour : retraits symétriques aux dépôts
+## Mise à jour : frais sur retraits et transferts
+
+Un champ **Frais (optionnel)** apparaît désormais pour les retraits et transferts (pas les dépôts — généralement gratuits sur mobile money/banque). Le frais est toujours déduit du compte source, en plus du montant principal ; pour un transfert, le compte destinataire ne reçoit que le montant principal. Tu peux, si tu le souhaites, compter ces frais comme une vraie dépense budgétaire (ex: "Frais bancaires").
+
+### Configuration requise dans Supabase
+
+Exécute ceci une seule fois dans le SQL Editor :
+
+```sql
+alter table account_movements add column if not exists fee numeric default 0;
+alter table account_movements add column if not exists linked_fee_transaction_id uuid;
+```
+
+
 
 Les **retraits** suivent maintenant la même logique que les dépôts, avec 3 natures possibles :
 1. **Je reprends de l'épargne mise de côté** → lié à Épargne/Objectifs (annule une partie de ce que tu avais rangé)

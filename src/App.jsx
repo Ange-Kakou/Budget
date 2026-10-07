@@ -158,10 +158,11 @@ function sortTransactions(list) {
 
 function accountBalance(movements, accountId) {
   return movements.reduce((bal, m) => {
+    const fee = Number(m.fee) || 0;
     if (m.account_id === accountId) {
       if (m.type === "depot") return bal + m.amount;
-      if (m.type === "retrait") return bal - m.amount;
-      if (m.type === "transfert") return bal - m.amount;
+      if (m.type === "retrait") return bal - m.amount - fee;
+      if (m.type === "transfert") return bal - m.amount - fee;
     }
     if (m.target_account_id === accountId && m.type === "transfert") return bal + m.amount;
     return bal;
@@ -496,6 +497,8 @@ export default function BudgetApp() {
     const targetAccount = m.type === "transfert" ? accounts.find((a) => a.id === m.targetAccountId) : null;
     const date = m.date || todayStr();
 
+    const fee = Math.round(Number(m.fee) || 0);
+
     const movPayload = {
       id: makeId(),
       user_id: session.user.id,
@@ -503,11 +506,13 @@ export default function BudgetApp() {
       target_account_id: m.type === "transfert" ? m.targetAccountId : null,
       type: m.type,
       amount: amt,
+      fee,
       date,
       comment: m.comment || null,
       linked_group: null,
       linked_label: null,
       linked_transaction_id: null,
+      linked_fee_transaction_id: null,
     };
 
     // Détermine si ce mouvement doit créer une transaction budgétaire (revenu ou épargne),
@@ -561,6 +566,20 @@ export default function BudgetApp() {
       }
     }
 
+    if (fee > 0 && m.feeLinkEnabled && m.feeGroup && m.feeLabel) {
+      const { data: feeInserted } = await supabase.from("transactions").insert({
+        user_id: session.user.id, date, type: m.feeGroup, category: m.feeLabel, amount: fee,
+        comment: `Compte ${account?.name || ""} — frais de ${m.type === "transfert" ? "transfert" : "retrait"}`,
+      }).select().single();
+      if (feeInserted) {
+        movPayload.linked_fee_transaction_id = feeInserted.id;
+        setTransactions((prev) => sortTransactions([
+          { id: feeInserted.id, date: feeInserted.date, type: feeInserted.type, category: feeInserted.category, amount: feeInserted.amount, comment: feeInserted.comment, created_at: feeInserted.created_at },
+          ...prev,
+        ]));
+      }
+    }
+
     const { data: inserted, error } = await supabase.from("account_movements").insert(movPayload).select().single();
     if (!error && inserted) setMovements((prev) => sortMovements([inserted, ...prev]));
   };
@@ -571,6 +590,10 @@ export default function BudgetApp() {
     if (movement.linked_transaction_id) {
       setTransactions((prev) => prev.filter((t) => t.id !== movement.linked_transaction_id));
       await supabase.from("transactions").delete().eq("id", movement.linked_transaction_id);
+    }
+    if (movement.linked_fee_transaction_id) {
+      setTransactions((prev) => prev.filter((t) => t.id !== movement.linked_fee_transaction_id));
+      await supabase.from("transactions").delete().eq("id", movement.linked_fee_transaction_id);
     }
   };
 
@@ -2228,6 +2251,11 @@ function MovementModal({ account, accounts, data, onClose, onSubmit }) {
   const [withdrawalEpargneLabel, setWithdrawalEpargneLabel] = useState("");
   const [withdrawalDepenseGroup, setWithdrawalDepenseGroup] = useState("Dépenses");
   const [withdrawalDepenseLabel, setWithdrawalDepenseLabel] = useState("");
+  // Frais (retrait / transfert uniquement)
+  const [fee, setFee] = useState("");
+  const [feeLinkEnabled, setFeeLinkEnabled] = useState(false);
+  const [feeGroup, setFeeGroup] = useState("Dépenses");
+  const [feeLabel, setFeeLabel] = useState("");
   const [error, setError] = useState("");
 
   const otherAccounts = accounts.filter((a) => a.id !== account.id);
@@ -2236,6 +2264,8 @@ function MovementModal({ account, accounts, data, onClose, onSubmit }) {
   const withdrawalEpargneLabelOptions = (data[withdrawalEpargneGroup] || []).map((r) => r.name);
   const withdrawalDepenseLabelOptions = (data[withdrawalDepenseGroup] || []).map((r) => r.name);
   const DEPENSE_GROUPS = ["Dépenses", "Factures", "Crédits"];
+  const feeLabelOptions = (data[feeGroup] || []).map((r) => r.name);
+  const hasFee = type === "retrait" || type === "transfert";
 
   const submit = () => {
     if (!amount || Number(amount) <= 0) { setError("Indique un montant positif."); return; }
@@ -2244,11 +2274,15 @@ function MovementModal({ account, accounts, data, onClose, onSubmit }) {
     if (type === "depot" && depositKind === "revenu" && !depositRevenuLabel) { setError("Choisis l'intitulé de revenu correspondant."); return; }
     if (type === "retrait" && withdrawalKind === "epargne" && !withdrawalEpargneLabel) { setError("Choisis l'intitulé d'épargne concerné."); return; }
     if (type === "retrait" && withdrawalKind === "depense" && !withdrawalDepenseLabel) { setError("Choisis l'intitulé de dépense concerné."); return; }
+    if (hasFee && Number(fee) > 0 && feeLinkEnabled && !feeLabel) { setError("Choisis un intitulé pour les frais, ou décoche l'option."); return; }
     onSubmit({
       accountId: account.id, type, amount, date, comment, targetAccountId,
       depositKind, withdrawalKind,
       linkGroup: type === "depot" ? depositEpargneGroup : (withdrawalKind === "depense" ? withdrawalDepenseGroup : withdrawalEpargneGroup),
       linkLabel: type === "depot" ? (depositKind === "revenu" ? depositRevenuLabel : depositEpargneLabel) : (withdrawalKind === "depense" ? withdrawalDepenseLabel : withdrawalEpargneLabel),
+      fee: hasFee ? (fee || 0) : 0,
+      feeLinkEnabled: hasFee && feeLinkEnabled,
+      feeGroup, feeLabel,
     });
   };
 
@@ -2289,6 +2323,33 @@ function MovementModal({ account, accounts, data, onClose, onSubmit }) {
           <Field label="Montant (F CFA)">
             <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" className="w-full num" style={{ background: colors.surface2, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "7px 10px", color: colors.text, fontSize: 13.5, outline: "none" }} />
           </Field>
+          {hasFee && (
+            <Field label="Frais (optionnel)">
+              <input type="number" value={fee} onChange={(e) => setFee(e.target.value)} placeholder="0" className="w-full num" style={{ background: colors.surface2, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "7px 10px", color: colors.text, fontSize: 13.5, outline: "none" }} />
+              <span className="text-[11px] mt-0.5 block" style={{ color: colors.textDim }}>
+                Toujours déduit du compte « {account.name} », en plus du montant {type === "transfert" ? "— le compte destinataire ne reçoit que le montant principal." : "."}
+              </span>
+              {Number(fee) > 0 && (
+                <div className="mt-2 p-2.5 rounded-lg" style={{ background: colors.surface3 }}>
+                  <label className="flex items-center gap-2 text-xs font-medium" style={{ color: colors.text }}>
+                    <input type="checkbox" checked={feeLinkEnabled} onChange={(e) => setFeeLinkEnabled(e.target.checked)} />
+                    Compter ces frais comme une dépense
+                  </label>
+                  {feeLinkEnabled && (
+                    <div className="flex flex-col gap-2 mt-2">
+                      <select value={feeGroup} onChange={(e) => { setFeeGroup(e.target.value); setFeeLabel(""); }} className="w-full text-xs" style={{ background: colors.surface2, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "6px 8px", color: colors.text, outline: "none" }}>
+                        {DEPENSE_GROUPS.map((g) => <option key={g} value={g}>{g}</option>)}
+                      </select>
+                      <select value={feeLabel} onChange={(e) => setFeeLabel(e.target.value)} className="w-full text-xs" style={{ background: colors.surface2, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "6px 8px", color: colors.text, outline: "none" }}>
+                        <option value="">Choisir un intitulé…</option>
+                        {feeLabelOptions.map((l) => <option key={l} value={l}>{l}</option>)}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
+            </Field>
+          )}
           <Field label="Date">
             <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full" style={{ background: colors.surface2, border: `1px solid ${colors.line}`, borderRadius: 6, padding: "7px 10px", color: colors.text, fontSize: 13.5, outline: "none" }} />
           </Field>
@@ -2422,6 +2483,7 @@ function AccountHistoryModal({ account, accounts, movements, onClose, onDeleteMo
                     <div className="text-sm font-medium" style={{ color: colors.text }}>{label}</div>
                     <div className="text-[11px]" style={{ color: colors.textDim }}>
                       {formatDateFR(m.date)}{m.comment ? ` — ${m.comment}` : ""}{m.linked_label ? ` · 🔗 ${m.linked_group} > ${m.linked_label}` : ""}
+                      {Number(m.fee) > 0 && isOut ? ` · frais : ${fmt(m.fee)}` : ""}
                     </div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
